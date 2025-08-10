@@ -26,7 +26,7 @@ set -o pipefail  # Exit on pipe failure
 # CONSTANTS AND GLOBAL VARIABLES
 # ==============================================================================
 
-readonly SCRIPT_VERSION="v1.0.0"
+readonly SCRIPT_VERSION="1.0.0"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -56,23 +56,23 @@ readonly -a DCTERMS_ELEMENTS=(
 # File size limits (100MB default)
 readonly MAX_FILE_SIZE=$((100 * 1024 * 1024))
 
-# Global variables
-declare -A dc_metadata
-declare -A filtered_metadata
-declare -a selected_terms
-declare -i validation_errors=0
-declare -i validation_warnings=0
-declare operation=""
-declare input_file=""
-declare output_file=""
-declare target_format=""
-declare term_name=""
-declare subset_mode=0
-declare create_mode=0
-declare clean_mode=0
-declare select_index=0
-declare verbose=0
-declare debug=0
+# Global variables with namespace prefix to avoid pollution
+declare -A DC_metadata
+declare -A DC_filtered_metadata
+declare -a DC_selected_terms
+declare -i DC_validation_errors=0
+declare -i DC_validation_warnings=0
+declare DC_operation=""
+declare DC_input_file=""
+declare DC_output_file=""
+declare DC_target_format=""
+declare DC_term_name=""
+declare DC_subset_mode=0
+declare DC_create_mode=0
+declare DC_clean_mode=0
+declare DC_select_index=0
+declare DC_verbose=0
+declare DC_debug=0
 
 # ==============================================================================
 # UTILITY FUNCTIONS
@@ -92,12 +92,12 @@ log_message() {
             echo "[$timestamp] WARNING: $message" >&2
             ;;
         INFO)
-            if [[ $verbose -eq 1 ]]; then
+            if [[ $DC_verbose -eq 1 ]]; then
                 echo "[$timestamp] INFO: $message"
             fi
             ;;
         DEBUG)
-            if [[ $debug -eq 1 ]]; then
+            if [[ $DC_debug -eq 1 ]]; then
                 echo "[$timestamp] DEBUG: $message"
             fi
             ;;
@@ -121,7 +121,7 @@ handle_error() {
             ;;
         VALIDATION)
             log_message "ERROR" "$error_message"
-            ((validation_errors++))
+            ((DC_validation_errors++))
             ;;
         FORMAT)
             log_message "ERROR" "$error_message"
@@ -129,7 +129,7 @@ handle_error() {
             ;;
         WARNING)
             log_message "WARNING" "$error_message"
-            ((validation_warnings++))
+            ((DC_validation_warnings++))
             ;;
     esac
 }
@@ -255,10 +255,10 @@ parse_xml() {
     local file="$1"
     local line tag value namespace element
     
-    # Clear existing metadata
-    if [[ ${#dc_metadata[@]} -gt 0 ]]; then
-        for key in "${!dc_metadata[@]}"; do
-            unset dc_metadata["$key"]
+    # Clear existing metadata (safely handle uninitialized array)
+    if [[ -v DC_metadata[@] ]]; then
+        for key in "${!DC_metadata[@]}"; do
+            unset DC_metadata["$key"]
         done
     fi
     
@@ -271,15 +271,10 @@ parse_xml() {
             continue
         fi
         
-        # Extract DC elements with namespace - simplified pattern
-        if [[ "$line" == *"<dc:"* ]]; then
-            # Extract element name
-            element="${line#*<dc:}"
-            element="${element%%>*}"
-            
-            # Extract value
-            value="${line#*>}"
-            value="${value%%</dc:*}"
+        # Extract DC elements with namespace - improved regex pattern
+        if [[ "$line" =~ \<dc:([^[:space:]\>]+)\>([^\<]*)\</dc:([^\>]+)\> ]]; then
+            element="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
             
             if [[ -n "$element" ]] && [[ -n "$value" ]]; then
                 element=$(trim "$element")
@@ -287,23 +282,18 @@ parse_xml() {
                 value=$(unescape_xml_chars "$value")
                 
                 # Store in metadata array
-                if [[ -n "${dc_metadata[$element]:-}" ]]; then
-                    dc_metadata["$element"]="${dc_metadata[$element]}|$value"
+                if [[ -n "${DC_metadata[$element]:-}" ]]; then
+                    DC_metadata["$element"]="${DC_metadata[$element]};$value"
                 else
-                    dc_metadata["$element"]="$value"
+                    DC_metadata["$element"]="$value"
                 fi
             fi
         fi
         
-        # Extract DCTERMS elements - simplified pattern
-        if [[ "$line" == *"<dcterms:"* ]]; then
-            # Extract element name
-            element="${line#*<dcterms:}"
-            element="${element%%>*}"
-            
-            # Extract value
-            value="${line#*>}"
-            value="${value%%</dcterms:*}"
+        # Extract DCTERMS elements - improved regex pattern
+        if [[ "$line" =~ \<dcterms:([^[:space:]\>]+)\>([^\<]*)\</dcterms:([^\>]+)\> ]]; then
+            element="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
             
             if [[ -n "$element" ]] && [[ -n "$value" ]]; then
                 element=$(trim "$element")
@@ -311,30 +301,28 @@ parse_xml() {
                 value=$(unescape_xml_chars "$value")
                 
                 # Store with dcterms prefix
-                if [[ -n "${dc_metadata[dcterms:$element]:-}" ]]; then
-                    dc_metadata["dcterms:$element"]="${dc_metadata[dcterms:$element]}|$value"
+                if [[ -n "${DC_metadata[dcterms:$element]:-}" ]]; then
+                    DC_metadata["dcterms:$element"]="${DC_metadata[dcterms:$element]};$value"
                 else
-                    dc_metadata["dcterms:$element"]="$value"
+                    DC_metadata["dcterms:$element"]="$value"
                 fi
             fi
         fi
         
         # Handle elements without namespace prefix
         for dc_elem in "${DC_ELEMENTS[@]}"; do
-            if [[ "$line" == *"<$dc_elem>"* ]]; then
-                # Extract value
-                value="${line#*<$dc_elem>}"
-                value="${value%%</$dc_elem>*}"
+            if [[ "$line" =~ \<${dc_elem}\>([^\<]*)\</${dc_elem}\> ]]; then
+                value="${BASH_REMATCH[1]}"
                 
                 if [[ -n "$value" ]]; then
                     element=$(trim "$dc_elem")
                     value=$(trim "$value")
                     value=$(unescape_xml_chars "$value")
                     
-                    if [[ -n "${dc_metadata[$element]:-}" ]]; then
-                        dc_metadata["$element"]="${dc_metadata[$element]}|$value"
+                    if [[ -n "${DC_metadata[$element]:-}" ]]; then
+                        DC_metadata["$element"]="${DC_metadata[$element]}|$value"
                     else
-                        dc_metadata["$element"]="$value"
+                        DC_metadata["$element"]="$value"
                     fi
                 fi
                 break
@@ -351,9 +339,9 @@ parse_text() {
     local line key value
     
     # Clear existing metadata
-    if [[ ${#dc_metadata[@]} -gt 0 ]]; then
-        for key in "${!dc_metadata[@]}"; do
-            unset dc_metadata["$key"]
+    if [[ ${#DC_metadata[@]} -gt 0 ]]; then
+        for key in "${!DC_metadata[@]}"; do
+            unset DC_metadata["$key"]
         done
     fi
     
@@ -398,10 +386,10 @@ parse_text() {
             fi
             
             if [[ $valid_key -eq 1 ]] && [[ -n "$value" ]]; then
-                if [[ -n "${dc_metadata[$key]:-}" ]]; then
-                    dc_metadata["$key"]="${dc_metadata[$key]}|$value"
+                if [[ -n "${DC_metadata[$key]:-}" ]]; then
+                    DC_metadata["$key"]="${DC_metadata[$key]};$value"
                 else
-                    dc_metadata["$key"]="$value"
+                    DC_metadata["$key"]="$value"
                 fi
             fi
         fi
@@ -416,9 +404,9 @@ parse_html() {
     local line element value prefix
     
     # Clear existing metadata
-    if [[ ${#dc_metadata[@]} -gt 0 ]]; then
-        for key in "${!dc_metadata[@]}"; do
-            unset dc_metadata["$key"]
+    if [[ ${#DC_metadata[@]} -gt 0 ]]; then
+        for key in "${!DC_metadata[@]}"; do
+            unset DC_metadata["$key"]
         done
     fi
     
@@ -463,10 +451,10 @@ parse_html() {
                 value=$(unescape_xml_chars "$value")
                 
                 if [[ -n "$value" ]]; then
-                    if [[ -n "${dc_metadata[$element]:-}" ]]; then
-                        dc_metadata["$element"]="${dc_metadata[$element]}|$value"
+                    if [[ -n "${DC_metadata[$element]:-}" ]]; then
+                        DC_metadata["$element"]="${DC_metadata[$element]};$value"
                     else
-                        dc_metadata["$element"]="$value"
+                        DC_metadata["$element"]="$value"
                     fi
                 fi
             elif [[ "$name_part" == dcterms.* ]]; then
@@ -478,10 +466,10 @@ parse_html() {
                 value=$(unescape_xml_chars "$value")
                 
                 if [[ -n "$value" ]]; then
-                    if [[ -n "${dc_metadata[dcterms:$element]:-}" ]]; then
-                        dc_metadata["dcterms:$element"]="${dc_metadata[dcterms:$element]}|$value"
+                    if [[ -n "${DC_metadata[dcterms:$element]:-}" ]]; then
+                        DC_metadata["dcterms:$element"]="${DC_metadata[dcterms:$element]}|$value"
                     else
-                        dc_metadata["dcterms:$element"]="$value"
+                        DC_metadata["dcterms:$element"]="$value"
                     fi
                 fi
             fi
@@ -501,46 +489,54 @@ validate_dublin_core() {
     local has_required=0
     local has_errors=0
     
-    validation_errors=0
-    validation_warnings=0
+    DC_validation_errors=0
+    DC_validation_warnings=0
     
     echo "=== Dublin Core Validation Report ==="
-    echo "File: $input_file"
+    echo "File: $DC_input_file"
     echo "Format: $format"
     echo ""
     
+    # Track validation issues
+    local validation_issues=()
+    local warning_issues=()
+    
     # Check for at least one required element
     for element in "${DC_ELEMENTS[@]}"; do
-        if [[ -n "${dc_metadata[$element]:-}" ]]; then
+        if [[ -n "${DC_metadata[$element]:-}" ]]; then
             has_required=1
             break
         fi
     done
     
     if [[ $has_required -eq 0 ]]; then
+        validation_issues+=("No Dublin Core elements found in file")
         handle_error "VALIDATION" "No Dublin Core elements found"
         has_errors=1
     fi
     
     # Validate title (strongly recommended)
-    if [[ -z "${dc_metadata[title]:-}" ]]; then
+    if [[ -z "${DC_metadata[title]:-}" ]]; then
+        warning_issues+=("Missing recommended element: title")
         handle_error "WARNING" "Missing recommended element: title"
     fi
     
     # Validate date format if present
-    if [[ -n "${dc_metadata[date]:-}" ]]; then
-        local date_value="${dc_metadata[date]}"
+    if [[ -n "${DC_metadata[date]:-}" ]]; then
+        local date_value="${DC_metadata[date]}"
         # Check for ISO 8601 format (basic validation)
         if ! [[ "$date_value" =~ ^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$ ]]; then
+            warning_issues+=("Date format should be ISO 8601: $date_value")
             handle_error "WARNING" "Date format should be ISO 8601: $date_value"
         fi
     fi
     
     # Validate language codes if present
-    if [[ -n "${dc_metadata[language]:-}" ]]; then
-        local lang_value="${dc_metadata[language]}"
+    if [[ -n "${DC_metadata[language]:-}" ]]; then
+        local lang_value="${DC_metadata[language]}"
         # Check for ISO 639 format (basic validation)
         if ! [[ "$lang_value" =~ ^[a-z]{2,3}(-[A-Z]{2})?$ ]]; then
+            warning_issues+=("Language code should follow ISO 639: $lang_value")
             handle_error "WARNING" "Language code should follow ISO 639: $lang_value"
         fi
     fi
@@ -548,34 +544,70 @@ validate_dublin_core() {
     # Validate format-specific structure
     case "$format" in
         xml)
-            validate_xml_structure
+            validate_xml_structure validation_issues warning_issues
             ;;
         html)
-            validate_html_structure
+            validate_html_structure validation_issues warning_issues
             ;;
         text)
-            validate_text_structure
+            validate_text_structure validation_issues warning_issues
             ;;
     esac
     
-    # Summary
+    # Summary - single line output
     echo ""
-    echo "=== Validation Summary ==="
-    echo "Errors: $validation_errors"
-    echo "Warnings: $validation_warnings"
+    if [[ $DC_validation_errors -eq 0 ]] && [[ $DC_validation_warnings -eq 0 ]]; then
+        echo "Status: VALID - File contains valid Dublin Core metadata with no issues"
+    elif [[ $DC_validation_errors -eq 0 ]]; then
+        # Join warnings with semicolon separator
+        local warning_list=""
+        for warning in "${warning_issues[@]}"; do
+            if [[ -n "$warning_list" ]]; then
+                warning_list="$warning_list; $warning"
+            else
+                warning_list="$warning"
+            fi
+        done
+        echo "Status: VALID (with warnings) - $warning_list"
+    else
+        # Build error and warning lists
+        local error_list=""
+        for issue in "${validation_issues[@]}"; do
+            if [[ -n "$error_list" ]]; then
+                error_list="$error_list; $issue"
+            else
+                error_list="$issue"
+            fi
+        done
+        
+        local warning_list=""
+        for warning in "${warning_issues[@]}"; do
+            if [[ -n "$warning_list" ]]; then
+                warning_list="$warning_list; $warning"
+            else
+                warning_list="$warning"
+            fi
+        done
+        
+        if [[ -n "$warning_list" ]]; then
+            echo "Status: INVALID - Errors: $error_list | Warnings: $warning_list"
+        else
+            echo "Status: INVALID - $error_list"
+        fi
+    fi
     
-    if [[ $validation_errors -eq 0 ]]; then
-        echo "Status: VALID"
+    if [[ $DC_validation_errors -eq 0 ]]; then
         return 0
     else
-        echo "Status: INVALID"
         return 1
     fi
 }
 
 # Validate XML structure
 validate_xml_structure() {
-    local file="$input_file"
+    local -n validation_issues_ref=$1
+    local -n warning_issues_ref=$2
+    local file="$DC_input_file"
     local has_xml_declaration=0
     local has_proper_encoding=0
     
@@ -587,30 +619,38 @@ validate_xml_structure() {
         if head -n 1 "$file" | grep -qi 'encoding.*utf-8'; then
             has_proper_encoding=1
         else
+            warning_issues_ref+=("XML should use UTF-8 encoding")
             handle_error "WARNING" "XML should use UTF-8 encoding"
         fi
     else
+        warning_issues_ref+=("Missing XML declaration")
         handle_error "WARNING" "Missing XML declaration"
     fi
     
-    # Check for balanced tags (basic)
-    local open_tags=0
-    local close_tags=0
-    while IFS= read -r line; do
-        # Count opening tags (excluding self-closing)
-        open_tags=$((open_tags + $(echo "$line" | grep -o '<[^/>][^>]*>' | grep -v '<?' | grep -v '<!' | wc -l)))
-        # Count closing tags
-        close_tags=$((close_tags + $(echo "$line" | grep -o '</[^>]*>' | wc -l)))
-    done < "$file"
+    # Check for balanced tags (improved)
+    local content=$(cat "$file")
+    
+    # Remove line breaks to handle multi-line tags, then remove XML declarations and comments
+    content=$(echo "$content" | tr -d '\n' | sed 's/<\?[^>]*\?>//g' | sed 's/<!--[^>]*-->//g')
+    
+    # Count opening tags (including multi-line tags with attributes and namespaces)
+    # Match any opening tag (including those with colons for namespaces) that doesn't end with />
+    local open_tags=$(echo "$content" | grep -oE '<[a-zA-Z:][^>]*>' | grep -v '/>' | wc -l)
+    
+    # Count closing tags
+    local close_tags=$(echo "$content" | grep -oE '</[^>]+>' | wc -l)
     
     if [[ $open_tags -ne $close_tags ]]; then
+        validation_issues_ref+=("Unbalanced XML tags (open: $open_tags, close: $close_tags)")
         handle_error "VALIDATION" "Unbalanced XML tags (open: $open_tags, close: $close_tags)"
     fi
 }
 
 # Validate HTML structure
 validate_html_structure() {
-    local file="$input_file"
+    local -n validation_issues_ref=$1
+    local -n warning_issues_ref=$2
+    local file="$DC_input_file"
     local has_head_section=0
     
     # Check for head section
@@ -628,7 +668,9 @@ validate_html_structure() {
 
 # Validate text structure
 validate_text_structure() {
-    local file="$input_file"
+    local -n validation_issues_ref=$1
+    local -n warning_issues_ref=$2
+    local file="$DC_input_file"
     local has_valid_format=1
     
     while IFS= read -r line; do
@@ -666,8 +708,8 @@ convert_to_xml() {
         
         # Output DC elements
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${dc_metadata[$element]:-}" ]]; then
-                IFS='|' read -ra values <<< "${dc_metadata[$element]}"
+            if [[ -n "${DC_metadata[$element]:-}" ]]; then
+                IFS=';' read -ra values <<< "${DC_metadata[$element]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <dc:$element>$value</dc:$element>"
@@ -676,10 +718,10 @@ convert_to_xml() {
         done
         
         # Output DCTERMS elements
-        for key in "${!dc_metadata[@]}"; do
+        for key in "${!DC_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
-                IFS='|' read -ra values <<< "${dc_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_metadata[$key]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <dcterms:$element>$value</dcterms:$element>"
@@ -709,8 +751,8 @@ convert_to_text() {
         
         # Output DC elements
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${dc_metadata[$element]:-}" ]]; then
-                IFS='|' read -ra values <<< "${dc_metadata[$element]}"
+            if [[ -n "${DC_metadata[$element]:-}" ]]; then
+                IFS=';' read -ra values <<< "${DC_metadata[$element]}"
                 for value in "${values[@]}"; do
                     # Capitalize first letter of element name
                     local display_name="${element^}"
@@ -720,11 +762,11 @@ convert_to_text() {
         done
         
         # Output DCTERMS elements
-        for key in "${!dc_metadata[@]}"; do
+        for key in "${!DC_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
                 local display_name="${element^}"
-                IFS='|' read -ra values <<< "${dc_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_metadata[$key]}"
                 for value in "${values[@]}"; do
                     echo "$display_name: $value"
                 done
@@ -753,8 +795,8 @@ convert_to_html() {
         
         # Output DC elements as meta tags
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${dc_metadata[$element]:-}" ]]; then
-                IFS='|' read -ra values <<< "${dc_metadata[$element]}"
+            if [[ -n "${DC_metadata[$element]:-}" ]]; then
+                IFS=';' read -ra values <<< "${DC_metadata[$element]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <meta name=\"DC.$element\" content=\"$value\">"
@@ -763,10 +805,10 @@ convert_to_html() {
         done
         
         # Output DCTERMS elements as meta tags
-        for key in "${!dc_metadata[@]}"; do
+        for key in "${!DC_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
-                IFS='|' read -ra values <<< "${dc_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_metadata[$key]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <meta name=\"dcterms.$element\" content=\"$value\">"
@@ -781,10 +823,10 @@ convert_to_html() {
         
         # Output human-readable content
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${dc_metadata[$element]:-}" ]]; then
+            if [[ -n "${DC_metadata[$element]:-}" ]]; then
                 local display_name="${element^}"
                 echo "        <dt><strong>$display_name:</strong></dt>"
-                IFS='|' read -ra values <<< "${dc_metadata[$element]}"
+                IFS=';' read -ra values <<< "${DC_metadata[$element]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "        <dd>$value</dd>"
@@ -793,12 +835,12 @@ convert_to_html() {
         done
         
         # Output DCTERMS elements
-        for key in "${!dc_metadata[@]}"; do
+        for key in "${!DC_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
                 local display_name="${element^}"
                 echo "        <dt><strong>$display_name (DCTERMS):</strong></dt>"
-                IFS='|' read -ra values <<< "${dc_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_metadata[$key]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "        <dd>$value</dd>"
@@ -832,30 +874,30 @@ extract_term() {
     local found=0
     
     # Check direct match
-    if [[ -n "${dc_metadata[$normalized_term]:-}" ]]; then
-        IFS='|' read -ra values <<< "${dc_metadata[$normalized_term]}"
+    if [[ -n "${DC_metadata[$normalized_term]:-}" ]]; then
+        IFS=';' read -ra values <<< "${DC_metadata[$normalized_term]}"
         
         # Handle select mode
-        if [[ $select_index -gt 0 ]]; then
-            if [[ $select_index -le ${#values[@]} ]]; then
-                local selected_value="${values[$((select_index-1))]}"
-                if [[ $clean_mode -eq 1 ]]; then
+        if [[ $DC_select_index -gt 0 ]]; then
+            if [[ $DC_select_index -le ${#values[@]} ]]; then
+                local selected_value="${values[$((DC_select_index-1))]}"
+                if [[ $DC_clean_mode -eq 1 ]]; then
                     echo "$selected_value"
                 else
                     echo "Term: $term"
                     echo "Value: $selected_value"
                 fi
             else
-                if [[ $clean_mode -eq 0 ]]; then
-                    echo "Term '$term' has only ${#values[@]} value(s), cannot select position $select_index"
+                if [[ $DC_clean_mode -eq 0 ]]; then
+                    echo "Term '$term' has only ${#values[@]} value(s), cannot select position $DC_select_index"
                 fi
                 return 1
             fi
         else
             # Normal mode (all values)
-            if [[ $clean_mode -eq 1 ]]; then
-                # Output values separated by pipes
-                echo "${dc_metadata[$normalized_term]}"
+            if [[ $DC_clean_mode -eq 1 ]]; then
+                # Output values separated by semicolons
+                echo "${DC_metadata[$normalized_term]}"
             else
                 echo "Term: $term"
                 for value in "${values[@]}"; do
@@ -867,30 +909,30 @@ extract_term() {
     fi
     
     # Check with dcterms prefix
-    if [[ -n "${dc_metadata[dcterms:$normalized_term]:-}" ]]; then
-        IFS='|' read -ra values <<< "${dc_metadata[dcterms:$normalized_term]}"
+    if [[ -n "${DC_metadata[dcterms:$normalized_term]:-}" ]]; then
+        IFS=';' read -ra values <<< "${DC_metadata[dcterms:$normalized_term]}"
         
         # Handle select mode
-        if [[ $select_index -gt 0 ]]; then
-            if [[ $select_index -le ${#values[@]} ]]; then
-                local selected_value="${values[$((select_index-1))]}"
-                if [[ $clean_mode -eq 1 ]]; then
+        if [[ $DC_select_index -gt 0 ]]; then
+            if [[ $DC_select_index -le ${#values[@]} ]]; then
+                local selected_value="${values[$((DC_select_index-1))]}"
+                if [[ $DC_clean_mode -eq 1 ]]; then
                     echo "$selected_value"
                 else
                     echo "Term: dcterms:$term"
                     echo "Value: $selected_value"
                 fi
             else
-                if [[ $clean_mode -eq 0 ]]; then
-                    echo "Term 'dcterms:$term' has only ${#values[@]} value(s), cannot select position $select_index"
+                if [[ $DC_clean_mode -eq 0 ]]; then
+                    echo "Term 'dcterms:$term' has only ${#values[@]} value(s), cannot select position $DC_select_index"
                 fi
                 return 1
             fi
         else
             # Normal mode (all values)
-            if [[ $clean_mode -eq 1 ]]; then
-                # Output values separated by pipes
-                echo "${dc_metadata[dcterms:$normalized_term]}"
+            if [[ $DC_clean_mode -eq 1 ]]; then
+                # Output values separated by semicolons
+                echo "${DC_metadata[dcterms:$normalized_term]}"
             else
                 echo "Term: dcterms:$term"
                 for value in "${values[@]}"; do
@@ -902,7 +944,7 @@ extract_term() {
     fi
     
     if [[ $found -eq 0 ]]; then
-        if [[ $clean_mode -eq 0 ]]; then
+        if [[ $DC_clean_mode -eq 0 ]]; then
             echo "Term '$term' not found in metadata"
         fi
         return 1
@@ -916,18 +958,18 @@ extract_term() {
 # ==============================================================================
 
 # Validate that selected terms exist in metadata
-validate_selected_terms() {
+validate_DC_selected_terms() {
     set +o errexit  # Temporarily disable errexit for debugging
     local term normalized_term found_terms=0 missing_terms=()
     
-    log_message "DEBUG" "Validating ${#selected_terms[@]} selected terms"
+    log_message "DEBUG" "Validating ${#DC_selected_terms[@]} selected terms"
     
-    for term in "${selected_terms[@]}"; do
+    for term in "${DC_selected_terms[@]}"; do
         normalized_term="${term,,}"  # Convert to lowercase
         local term_found=0
         
         # Check direct match
-        local direct_value="${dc_metadata[$normalized_term]:-}"
+        local direct_value="${DC_metadata[$normalized_term]:-}"
         if [[ -n "$direct_value" ]]; then
             term_found=1
             log_message "DEBUG" "Found term: $term"
@@ -935,7 +977,7 @@ validate_selected_terms() {
         
         # Check with dcterms prefix
         local dcterms_key="dcterms:$normalized_term"
-        local dcterms_value="${dc_metadata[$dcterms_key]:-}"
+        local dcterms_value="${DC_metadata[$dcterms_key]:-}"
         if [[ -n "$dcterms_value" ]]; then
             term_found=1
             log_message "DEBUG" "Found dcterms term: $term"
@@ -956,14 +998,14 @@ validate_selected_terms() {
     if [[ ${#missing_terms[@]} -gt 0 ]]; then
         local missing_list="${missing_terms[*]}"
         handle_error "WARNING" "Selected terms not found in metadata: ${missing_list// /, }"
-        log_message "INFO" "Found $found_terms of ${#selected_terms[@]} selected terms"
+        log_message "INFO" "Found $found_terms of ${#DC_selected_terms[@]} selected terms"
         
         # Don't fail the operation, just warn - allow partial subset creation
         if [[ $found_terms -eq 0 ]]; then
             handle_error "CRITICAL" "None of the selected terms were found in the metadata" 1
         fi
     else
-        log_message "INFO" "All ${#selected_terms[@]} selected terms found in metadata"
+        log_message "INFO" "All ${#DC_selected_terms[@]} selected terms found in metadata"
     fi
     
     set -o errexit  # Re-enable errexit
@@ -976,32 +1018,32 @@ filter_metadata() {
     local term normalized_term
     
     # Clear existing filtered metadata
-    if [[ ${#filtered_metadata[@]} -gt 0 ]]; then
-        for key in "${!filtered_metadata[@]}"; do
-            unset filtered_metadata["$key"]
+    if [[ ${#DC_filtered_metadata[@]} -gt 0 ]]; then
+        for key in "${!DC_filtered_metadata[@]}"; do
+            unset DC_filtered_metadata["$key"]
         done
     fi
     
-    log_message "DEBUG" "Filtering metadata for ${#selected_terms[@]} selected terms"
+    log_message "DEBUG" "Filtering metadata for ${#DC_selected_terms[@]} selected terms"
     
-    for term in "${selected_terms[@]}"; do
+    for term in "${DC_selected_terms[@]}"; do
         normalized_term="${term,,}"  # Convert to lowercase
         
         # Check direct match and copy if found
-        if [[ -n "${dc_metadata[$normalized_term]:-}" ]]; then
-            filtered_metadata["$normalized_term"]="${dc_metadata[$normalized_term]}"
+        if [[ -n "${DC_metadata[$normalized_term]:-}" ]]; then
+            DC_filtered_metadata["$normalized_term"]="${DC_metadata[$normalized_term]}"
             log_message "DEBUG" "Filtered term: $normalized_term"
         fi
         
         # Check with dcterms prefix and copy if found
         local dcterms_key="dcterms:$normalized_term"
-        if [[ -n "${dc_metadata[$dcterms_key]:-}" ]]; then
-            filtered_metadata["$dcterms_key"]="${dc_metadata[$dcterms_key]}"
+        if [[ -n "${DC_metadata[$dcterms_key]:-}" ]]; then
+            DC_filtered_metadata["$dcterms_key"]="${DC_metadata[$dcterms_key]}"
             log_message "DEBUG" "Filtered dcterms term: $dcterms_key"
         fi
     done
     
-    log_message "INFO" "Filtered ${#filtered_metadata[@]} metadata entries"
+    log_message "INFO" "Filtered ${#DC_filtered_metadata[@]} metadata entries"
     set -o errexit  # Re-enable errexit
     return 0
 }
@@ -1018,8 +1060,8 @@ convert_subset_to_xml() {
         
         # Output filtered DC elements in the defined order
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${filtered_metadata[$element]:-}" ]]; then
-                IFS='|' read -ra values <<< "${filtered_metadata[$element]}"
+            if [[ -n "${DC_filtered_metadata[$element]:-}" ]]; then
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$element]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <dc:$element>$value</dc:$element>"
@@ -1028,10 +1070,10 @@ convert_subset_to_xml() {
         done
         
         # Output filtered DCTERMS elements
-        for key in "${!filtered_metadata[@]}"; do
+        for key in "${!DC_filtered_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
-                IFS='|' read -ra values <<< "${filtered_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$key]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <dcterms:$element>$value</dcterms:$element>"
@@ -1057,13 +1099,13 @@ convert_subset_to_text() {
     {
         echo "# Dublin Core Metadata (Subset)"
         echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "# Selected terms: ${selected_terms[*]}"
+        echo "# Selected terms: ${DC_selected_terms[*]}"
         echo ""
         
         # Output filtered DC elements in the defined order
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${filtered_metadata[$element]:-}" ]]; then
-                IFS='|' read -ra values <<< "${filtered_metadata[$element]}"
+            if [[ -n "${DC_filtered_metadata[$element]:-}" ]]; then
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$element]}"
                 for value in "${values[@]}"; do
                     # Capitalize first letter of element name
                     local display_name="${element^}"
@@ -1073,11 +1115,11 @@ convert_subset_to_text() {
         done
         
         # Output filtered DCTERMS elements
-        for key in "${!filtered_metadata[@]}"; do
+        for key in "${!DC_filtered_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
                 local display_name="${element^}"
-                IFS='|' read -ra values <<< "${filtered_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$key]}"
                 for value in "${values[@]}"; do
                     echo "$display_name: $value"
                 done
@@ -1106,8 +1148,8 @@ convert_subset_to_html() {
         
         # Output filtered DC elements as meta tags
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${filtered_metadata[$element]:-}" ]]; then
-                IFS='|' read -ra values <<< "${filtered_metadata[$element]}"
+            if [[ -n "${DC_filtered_metadata[$element]:-}" ]]; then
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$element]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <meta name=\"DC.$element\" content=\"$value\">"
@@ -1116,10 +1158,10 @@ convert_subset_to_html() {
         done
         
         # Output filtered DCTERMS elements as meta tags
-        for key in "${!filtered_metadata[@]}"; do
+        for key in "${!DC_filtered_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
-                IFS='|' read -ra values <<< "${filtered_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$key]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <meta name=\"dcterms.$element\" content=\"$value\">"
@@ -1130,15 +1172,15 @@ convert_subset_to_html() {
         echo '</head>'
         echo '<body>'
         echo '    <h1>Dublin Core Metadata (Subset)</h1>'
-        echo "    <p><em>Selected terms: ${selected_terms[*]}</em></p>"
+        echo "    <p><em>Selected terms: ${DC_selected_terms[*]}</em></p>"
         echo '    <dl>'
         
         # Output human-readable content for filtered DC elements
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${filtered_metadata[$element]:-}" ]]; then
+            if [[ -n "${DC_filtered_metadata[$element]:-}" ]]; then
                 local display_name="${element^}"
                 echo "        <dt><strong>$display_name:</strong></dt>"
-                IFS='|' read -ra values <<< "${filtered_metadata[$element]}"
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$element]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "        <dd>$value</dd>"
@@ -1147,12 +1189,12 @@ convert_subset_to_html() {
         done
         
         # Output human-readable content for filtered DCTERMS elements
-        for key in "${!filtered_metadata[@]}"; do
+        for key in "${!DC_filtered_metadata[@]}"; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
                 local display_name="${element^}"
                 echo "        <dt><strong>$display_name (DCTERMS):</strong></dt>"
-                IFS='|' read -ra values <<< "${filtered_metadata[$key]}"
+                IFS=';' read -ra values <<< "${DC_filtered_metadata[$key]}"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "        <dd>$value</dd>"
@@ -1182,18 +1224,18 @@ convert_subset_to_html() {
 # Display all metadata
 display_metadata() {
     echo "=== Dublin Core Metadata ==="
-    echo "File: $input_file"
+    echo "File: $DC_input_file"
     echo ""
     
     local has_metadata=0
     
     # Display DC elements
     for element in "${DC_ELEMENTS[@]}"; do
-        if [[ -n "${dc_metadata[$element]:-}" ]]; then
+        if [[ -n "${DC_metadata[$element]:-}" ]]; then
             has_metadata=1
             local display_name="${element^}"
             echo "$display_name:"
-            IFS='|' read -ra values <<< "${dc_metadata[$element]}"
+            IFS=';' read -ra values <<< "${DC_metadata[$element]}"
             for value in "${values[@]}"; do
                 echo "  - $value"
             done
@@ -1201,13 +1243,13 @@ display_metadata() {
     done
     
     # Display DCTERMS elements
-    for key in "${!dc_metadata[@]}"; do
+    for key in "${!DC_metadata[@]}"; do
         if [[ "$key" =~ ^dcterms: ]]; then
             has_metadata=1
             local element="${key#dcterms:}"
             local display_name="${element^}"
             echo "$display_name (DCTERMS):"
-            IFS='|' read -ra values <<< "${dc_metadata[$key]}"
+            IFS=';' read -ra values <<< "${DC_metadata[$key]}"
             for value in "${values[@]}"; do
                 echo "  - $value"
             done
@@ -1228,19 +1270,19 @@ USAGE:
     ${SCRIPT_NAME} [OPTIONS]
 
 OPTIONS:
-    --help              Display this help message
-    --read FILE         Read and display Dublin Core metadata from FILE
-    --validate          Validate Dublin Core metadata (use with --read)
-    --format FORMAT --output FILE    Convert metadata to FORMAT and write to FILE (xml, text, html)
-                                 (--format and --output must be used together)
-    --term TERM         Extract specific Dublin Core term OR select term for subset operation
+    --help, -h          Display this help message
+    --read, -r FILE     Read and display Dublin Core metadata from FILE
+    --validate, -v      Validate Dublin Core metadata (use with --read)
+    --format, -f FORMAT --output, -o FILE    Convert metadata to FORMAT and write to FILE (xml, text, html)
+                                         (--format and --output must be used together)
+    --term, -t TERM     Extract specific Dublin Core term OR select term for subset operation
                         (can be used multiple times for subset creation or create mode)
-    --clean             Output only term values, pipe-separated if multiple (use with single --term)
-    --select N          Select Nth value when term has multiple values (1-based index, use with single --term)
+    --clean, -l         Output only term values, semicolon-separated if multiple (use with single --term)
+    --select, -s N      Select Nth value when term has multiple values (1-based index, use with single --term)
                         Syntax: --term TERM --select N --read FILE
-    --create            Create new Dublin Core file from --term flags (no input file required)
-    --verbose           Enable verbose output
-    --debug             Enable debug output
+    --create, -c        Create new Dublin Core file from --term flags (no input file required)
+    --verbose, -V       Enable verbose output
+    --debug, -d         Enable debug output
 
 OPERATION MODES:
     1. Read Mode:       Display all metadata from input file
@@ -1266,9 +1308,9 @@ EXAMPLES:
     ${SCRIPT_NAME} --term "title" --read metadata.xml
     ${SCRIPT_NAME} --term "creator" --read metadata.txt
     
-    # Extract term with clean output (values only, pipe-separated if multiple)
+    # Extract term with clean output (values only, semicolon-separated if multiple)
     ${SCRIPT_NAME} --term "title" --clean --read metadata.xml
-    ${SCRIPT_NAME} --term "creator" --clean --read metadata.xml  # Multiple values: "Smith, Jane|Johnson, Bob"
+    ${SCRIPT_NAME} --term "creator" --clean --read metadata.xml  # Multiple values: "Smith, Jane;Johnson, Bob"
     
     # Select specific term value by position (1-based index)
     ${SCRIPT_NAME} --term "creator" --select 1 --read metadata.xml          # Gets first creator value
@@ -1312,7 +1354,7 @@ NAMESPACE PREFIXES:
 TERM USAGE:
     Use element names without prefixes in --term flags (e.g., --term title, --term abstract)
     Script automatically detects appropriate namespace (dc: or dcterms:)
-    All terms support multiple values separated by pipe (|) character
+    All terms support multiple values separated by semicolon (;) character
 
 For more information about Dublin Core, visit:
     https://www.dublincore.org/
@@ -1337,11 +1379,11 @@ parse_arguments() {
                 if [[ -z "${1:-}" ]]; then
                     handle_error "CRITICAL" "Missing argument for --read" 1
                 fi
-                input_file="$1"
+                DC_input_file="$1"
                 shift
                 ;;
             --validate|-v)
-                operation="validate"
+                DC_operation="validate"
                 shift
                 ;;
             --format|-f)
@@ -1349,10 +1391,10 @@ parse_arguments() {
                 if [[ -z "${1:-}" ]]; then
                     handle_error "CRITICAL" "Missing format argument for --format" 1
                 fi
-                target_format="$1"
+                DC_target_format="$1"
                 # Validate format
-                if [[ ! "$target_format" =~ ^(xml|text|html)$ ]]; then
-                    handle_error "CRITICAL" "Invalid format: $target_format (must be xml, text, or html)" 1
+                if [[ ! "$DC_target_format" =~ ^(xml|text|html)$ ]]; then
+                    handle_error "CRITICAL" "Invalid format: $DC_target_format (must be xml, text, or html)" 1
                 fi
                 shift
                 
@@ -1366,19 +1408,19 @@ parse_arguments() {
                 if [[ -z "${1:-}" ]]; then
                     handle_error "CRITICAL" "Missing file argument for --output" 1
                 fi
-                output_file="$1"
+                DC_output_file="$1"
                 
                 # Set operation based on context
-                if [[ $create_mode -eq 1 ]]; then
+                if [[ $DC_create_mode -eq 1 ]]; then
                     # Create mode takes precedence
-                    operation="create"
-                elif [[ ${#selected_terms[@]} -gt 0 ]]; then
+                    DC_operation="create"
+                elif [[ ${#DC_selected_terms[@]} -gt 0 ]]; then
                     # Terms already specified, this is subset mode
-                    operation="subset"
-                    subset_mode=1
+                    DC_operation="subset"
+                    DC_subset_mode=1
                 else
                     # No terms yet, regular conversion
-                    operation="convert"
+                    DC_operation="convert"
                 fi
                 
                 shift
@@ -1386,14 +1428,14 @@ parse_arguments() {
             --output|-o)
                 # --output should only be used when --format is not available
                 # With --format, --output is parsed together automatically
-                if [[ -z "$target_format" ]]; then
+                if [[ -z "$DC_target_format" ]]; then
                     handle_error "CRITICAL" "--output requires --format to be specified first: --format xml --output file.xml" 1
                 fi
                 shift
                 if [[ -z "${1:-}" ]]; then
                     handle_error "CRITICAL" "Missing file argument for --output" 1
                 fi
-                output_file="$1"
+                DC_output_file="$1"
                 shift
                 ;;
             --term|-t)
@@ -1403,7 +1445,7 @@ parse_arguments() {
                 fi
                 
                 # Handle create mode vs other modes differently
-                if [[ $create_mode -eq 1 ]] || [[ "$operation" == "create" ]]; then
+                if [[ $DC_create_mode -eq 1 ]] || [[ "$DC_operation" == "create" ]]; then
                     # In create mode, expect term name followed by value
                     local key="$1"
                     key=$(trim "$key")
@@ -1443,56 +1485,56 @@ parse_arguments() {
                         fi
                     fi
                     
-                    # Store the key=value pair in dc_metadata for write mode
-                    if [[ -n "${dc_metadata[$key]:-}" ]]; then
-                        dc_metadata["$key"]="${dc_metadata[$key]}|$value"
+                    # Store the key=value pair in DC_metadata for write mode
+                    if [[ -n "${DC_metadata[$key]:-}" ]]; then
+                        DC_metadata["$key"]="${DC_metadata[$key]};$value"
                     else
-                        dc_metadata["$key"]="$value"
+                        DC_metadata["$key"]="$value"
                     fi
                     
-                    # Also add to selected_terms for tracking
-                    selected_terms+=("$key")
+                    # Also add to DC_selected_terms for tracking
+                    DC_selected_terms+=("$key")
                 else
-                    # Traditional mode: just add term name to selected_terms array
-                    selected_terms+=("$1")
+                    # Traditional mode: just add term name to DC_selected_terms array
+                    DC_selected_terms+=("$1")
                     
                     # Set operation based on context (but don't override create mode)
-                    if [[ -z "$operation" ]] && [[ $create_mode -eq 0 ]]; then
+                    if [[ -z "$DC_operation" ]] && [[ $DC_create_mode -eq 0 ]]; then
                         # First --term encountered and not in create mode
-                        if [[ -n "${target_format:-}" ]]; then
+                        if [[ -n "${DC_target_format:-}" ]]; then
                             # If --format was already specified, this is subset mode
-                            operation="subset"
-                            subset_mode=1
+                            DC_operation="subset"
+                            DC_subset_mode=1
                         else
                             # Traditional single term extraction
-                            operation="extract"
-                            term_name="$1"
+                            DC_operation="extract"
+                            DC_term_name="$1"
                         fi
-                    elif [[ "$operation" == "extract" ]]; then
+                    elif [[ "$DC_operation" == "extract" ]]; then
                         # Second --term encountered, switch to subset mode
-                        operation="subset"
-                        subset_mode=1
-                        # Clear term_name as we now use selected_terms
-                        term_name=""
-                    elif [[ "$operation" == "convert" ]]; then
+                        DC_operation="subset"
+                        DC_subset_mode=1
+                        # Clear DC_term_name as we now use DC_selected_terms
+                        DC_term_name=""
+                    elif [[ "$DC_operation" == "convert" ]]; then
                         # --format was specified first, this becomes subset mode
-                        operation="subset"
-                        subset_mode=1
+                        DC_operation="subset"
+                        DC_subset_mode=1
                     fi
                 fi
                 
                 shift
                 ;;
-            --create)
-                create_mode=1
-                operation="create"
+            --create|-c)
+                DC_create_mode=1
+                DC_operation="create"
                 shift
                 ;;
-            --clean)
-                clean_mode=1
+            --clean|-l)
+                DC_clean_mode=1
                 shift
                 ;;
-            --select)
+            --select|-s)
                 shift
                 if [[ -z "${1:-}" ]]; then
                     handle_error "CRITICAL" "Missing argument for --select" 1
@@ -1500,16 +1542,16 @@ parse_arguments() {
                 if ! [[ "$1" =~ ^[1-9][0-9]*$ ]]; then
                     handle_error "CRITICAL" "Invalid --select value: '$1' (must be a positive integer starting from 1)" 1
                 fi
-                select_index="$1"
+                DC_select_index="$1"
                 shift
                 ;;
-            --verbose)
-                verbose=1
+            --verbose|-V)
+                DC_verbose=1
                 shift
                 ;;
-            --debug)
-                debug=1
-                verbose=1
+            --debug|-d)
+                DC_debug=1
+                DC_verbose=1
                 shift
                 ;;
             *)
@@ -1519,46 +1561,46 @@ parse_arguments() {
     done
     
     # Validate required arguments
-    if [[ -z "$input_file" ]] && [[ "$operation" != "create" ]]; then
+    if [[ -z "$DC_input_file" ]] && [[ "$DC_operation" != "create" ]]; then
         handle_error "CRITICAL" "No input file specified. Use --read FILE" 1
     fi
     
     # Set default operation if none specified
-    if [[ -z "$operation" ]]; then
-        if [[ $create_mode -eq 1 ]]; then
-            operation="create"
+    if [[ -z "$DC_operation" ]]; then
+        if [[ $DC_create_mode -eq 1 ]]; then
+            DC_operation="create"
         else
-            operation="read"
+            DC_operation="read"
         fi
     fi
     
     # Validate convert operation requirements
-    if [[ "$operation" == "convert" ]] && [[ -z "$output_file" ]]; then
+    if [[ "$DC_operation" == "convert" ]] && [[ -z "$DC_output_file" ]]; then
         handle_error "CRITICAL" "No output file specified for conversion. Use --output FILE" 1
     fi
     
     # Validate subset operation requirements
-    if [[ "$operation" == "subset" ]]; then
-        if [[ ${#selected_terms[@]} -eq 0 ]]; then
+    if [[ "$DC_operation" == "subset" ]]; then
+        if [[ ${#DC_selected_terms[@]} -eq 0 ]]; then
             handle_error "CRITICAL" "No terms specified for subset operation. Use --term TERM" 1
         fi
-        if [[ -z "$target_format" ]]; then
+        if [[ -z "$DC_target_format" ]]; then
             handle_error "CRITICAL" "No output format specified for subset operation. Use --format FORMAT" 1
         fi
-        if [[ -z "$output_file" ]]; then
+        if [[ -z "$DC_output_file" ]]; then
             handle_error "CRITICAL" "No output file specified for subset operation. Use --output FILE" 1
         fi
     fi
     
     # Validate create operation requirements
-    if [[ "$operation" == "create" ]]; then
-        if [[ ${#selected_terms[@]} -eq 0 ]]; then
+    if [[ "$DC_operation" == "create" ]]; then
+        if [[ ${#DC_selected_terms[@]} -eq 0 ]]; then
             handle_error "CRITICAL" "No terms specified for create operation. Use --term KEY VALUE" 1
         fi
-        if [[ -z "$target_format" ]]; then
+        if [[ -z "$DC_target_format" ]]; then
             handle_error "CRITICAL" "No output format specified for create operation. Use --format FORMAT" 1
         fi
-        if [[ -z "$output_file" ]]; then
+        if [[ -z "$DC_output_file" ]]; then
             handle_error "CRITICAL" "No output file specified for create operation. Use --output FILE" 1
         fi
     fi
@@ -1569,24 +1611,24 @@ execute_operation() {
     local format
     
     # Only validate and parse input file if not in create mode
-    if [[ "$operation" != "create" ]]; then
+    if [[ "$DC_operation" != "create" ]]; then
         # Validate input file
-        validate_file_security "$input_file"
+        validate_file_security "$DC_input_file"
         
         # Detect format
-        format=$(detect_format "$input_file")
+        format=$(detect_format "$DC_input_file")
         log_message "INFO" "Detected format: $format"
         
         # Parse the input file
         case "$format" in
             xml)
-                parse_xml "$input_file"
+                parse_xml "$DC_input_file"
                 ;;
             html)
-                parse_html "$input_file"
+                parse_html "$DC_input_file"
                 ;;
             text)
-                parse_text "$input_file"
+                parse_text "$DC_input_file"
                 ;;
             *)
                 handle_error "CRITICAL" "Unknown format: $format" 1
@@ -1597,7 +1639,7 @@ execute_operation() {
     fi
     
     # Execute the operation
-    case "$operation" in
+    case "$DC_operation" in
         read)
             display_metadata
             ;;
@@ -1605,52 +1647,52 @@ execute_operation() {
             validate_dublin_core "$format"
             ;;
         convert)
-            case "$target_format" in
+            case "$DC_target_format" in
                 xml)
-                    convert_to_xml "$output_file"
+                    convert_to_xml "$DC_output_file"
                     ;;
                 text)
-                    convert_to_text "$output_file"
+                    convert_to_text "$DC_output_file"
                     ;;
                 html)
-                    convert_to_html "$output_file"
+                    convert_to_html "$DC_output_file"
                     ;;
             esac
             ;;
         extract)
-            extract_term "$term_name"
+            extract_term "$DC_term_name"
             ;;
         subset)
             # Validate that selected terms exist in metadata
-            validate_selected_terms
+            validate_DC_selected_terms
             
             # Filter metadata to only include selected terms
             filter_metadata
             
             # Convert filtered metadata to the specified format
-            case "$target_format" in
+            case "$DC_target_format" in
                 xml)
-                    convert_subset_to_xml "$output_file"
+                    convert_subset_to_xml "$DC_output_file"
                     ;;
                 text)
-                    convert_subset_to_text "$output_file"
+                    convert_subset_to_text "$DC_output_file"
                     ;;
                 html)
-                    convert_subset_to_html "$output_file"
+                    convert_subset_to_html "$DC_output_file"
                     ;;
             esac
             ;;
         create)
-            # Create mode: use existing conversion functions with dc_metadata populated from --term flags
-            case "$target_format" in
+            # Create mode: use existing conversion functions with DC_metadata populated from --term flags
+            case "$DC_target_format" in
                 xml)
-                    convert_to_xml "$output_file"
+                    convert_to_xml "$DC_output_file"
                     ;;
                 text)
-                    convert_to_text "$output_file"
+                    convert_to_text "$DC_output_file"
                     ;;
                 html)
-                    convert_to_html "$output_file"
+                    convert_to_html "$DC_output_file"
                     ;;
             esac
             ;;
