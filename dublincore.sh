@@ -6,15 +6,15 @@
 # Compatible with bash 3.2 or higher.
 #
 # Version: v1.0.0
-# Author: Dublin Core Bash Implementation
-# License: MIT
+# Author: Qirab™ project of the Thesaurus Islamicus Foundation 
+# License: CC0
 #
 # Usage:
 #   dublincore.sh --read <file>
 #   dublincore.sh --validate --read <file>
-#   dublincore.sh --format <format> --read <file> --output <file>
+#   dublincore.sh --read <file> --format <format> --output <file>
 #   dublincore.sh --term <term> --read <file>
-#   dublincore.sh --term <term> --term <term> --format <format> --read <file> --output <file>
+#   dublincore.sh --term <term> --term <term> --format <format> --output <file>
 #   dublincore.sh --help
 #
 
@@ -57,8 +57,9 @@ readonly -a DCTERMS_ELEMENTS=(
 readonly MAX_FILE_SIZE=$((100 * 1024 * 1024))
 
 # Global variables with namespace prefix to avoid pollution
-declare -A DC_metadata
-declare -A DC_filtered_metadata
+# Using indexed arrays for bash 3.2 compatibility (format: "key=value")
+declare -a DC_metadata
+declare -a DC_filtered_metadata
 declare -a DC_selected_terms
 declare -i DC_validation_errors=0
 declare -i DC_validation_warnings=0
@@ -76,6 +77,117 @@ declare DC_debug=0
 
 # ==============================================================================
 # UTILITY FUNCTIONS
+# ==============================================================================
+
+# Bash 3.2 compatible associative array functions using indexed arrays
+# Format: "key=value" stored in indexed array
+
+# Get value from metadata array by key
+get_metadata_value() {
+    local key="$1"
+    local i
+    for i in "${!DC_metadata[@]}"; do
+        if [[ "${DC_metadata[i]}" == "$key="* ]]; then
+            echo "${DC_metadata[i]#*=}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Set value in metadata array (replaces if exists, adds if new)
+set_metadata_value() {
+    local key="$1"
+    local value="$2"
+    local i found=0
+    
+    # Check if key already exists and update it
+    for i in "${!DC_metadata[@]}"; do
+        if [[ "${DC_metadata[i]}" == "$key="* ]]; then
+            DC_metadata[i]="$key=$value"
+            found=1
+            break
+        fi
+    done
+    
+    # If key doesn't exist, add it
+    if [[ $found -eq 0 ]]; then
+        DC_metadata+=("$key=$value")
+    fi
+}
+
+# Append value to existing metadata (for multiple values)
+append_metadata_value() {
+    local key="$1"
+    local value="$2"
+    local existing_value
+    
+    if existing_value=$(get_metadata_value "$key"); then
+        set_metadata_value "$key" "$existing_value;$value"
+    else
+        set_metadata_value "$key" "$value"
+    fi
+}
+
+# Get value from filtered metadata array by key
+get_filtered_value() {
+    local key="$1"
+    local i
+    for i in "${!DC_filtered_metadata[@]}"; do
+        if [[ "${DC_filtered_metadata[i]}" == "$key="* ]]; then
+            echo "${DC_filtered_metadata[i]#*=}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Set value in filtered metadata array
+set_filtered_value() {
+    local key="$1"
+    local value="$2"
+    local i found=0
+    
+    # Check if key already exists and update it
+    for i in "${!DC_filtered_metadata[@]}"; do
+        if [[ "${DC_filtered_metadata[i]}" == "$key="* ]]; then
+            DC_filtered_metadata[i]="$key=$value"
+            found=1
+            break
+        fi
+    done
+    
+    # If key doesn't exist, add it
+    if [[ $found -eq 0 ]]; then
+        DC_filtered_metadata+=("$key=$value")
+    fi
+}
+
+# Clear metadata arrays
+clear_metadata() {
+    DC_metadata=()
+}
+
+clear_filtered_metadata() {
+    DC_filtered_metadata=()
+}
+
+# Get all metadata keys
+get_metadata_keys() {
+    local i
+    for i in "${!DC_metadata[@]}"; do
+        echo "${DC_metadata[i]%%=*}"
+    done
+}
+
+# Get all filtered metadata keys
+get_filtered_keys() {
+    local i
+    for i in "${!DC_filtered_metadata[@]}"; do
+        echo "${DC_filtered_metadata[i]%%=*}"
+    done
+}
+
 # ==============================================================================
 
 # Log message with timestamp
@@ -255,12 +367,8 @@ parse_xml() {
     local file="$1"
     local line tag value namespace element
     
-    # Clear existing metadata (safely handle uninitialized array)
-    if [[ -v DC_metadata[@] ]]; then
-        for key in "${!DC_metadata[@]}"; do
-            unset DC_metadata["$key"]
-        done
-    fi
+    # Clear existing metadata
+    clear_metadata
     
     while IFS= read -r line; do
         # Skip comments and empty lines
@@ -282,11 +390,7 @@ parse_xml() {
                 value=$(unescape_xml_chars "$value")
                 
                 # Store in metadata array
-                if [[ -n "${DC_metadata[$element]:-}" ]]; then
-                    DC_metadata["$element"]="${DC_metadata[$element]};$value"
-                else
-                    DC_metadata["$element"]="$value"
-                fi
+                append_metadata_value "$element" "$value"
             fi
         fi
         
@@ -301,11 +405,7 @@ parse_xml() {
                 value=$(unescape_xml_chars "$value")
                 
                 # Store with dcterms prefix
-                if [[ -n "${DC_metadata[dcterms:$element]:-}" ]]; then
-                    DC_metadata["dcterms:$element"]="${DC_metadata[dcterms:$element]};$value"
-                else
-                    DC_metadata["dcterms:$element"]="$value"
-                fi
+                append_metadata_value "dcterms:$element" "$value"
             fi
         fi
         
@@ -319,11 +419,7 @@ parse_xml() {
                     value=$(trim "$value")
                     value=$(unescape_xml_chars "$value")
                     
-                    if [[ -n "${DC_metadata[$element]:-}" ]]; then
-                        DC_metadata["$element"]="${DC_metadata[$element]}|$value"
-                    else
-                        DC_metadata["$element"]="$value"
-                    fi
+                    append_metadata_value "$element" "$value"
                 fi
                 break
             fi
@@ -339,11 +435,7 @@ parse_text() {
     local line key value
     
     # Clear existing metadata
-    if [[ ${#DC_metadata[@]} -gt 0 ]]; then
-        for key in "${!DC_metadata[@]}"; do
-            unset DC_metadata["$key"]
-        done
-    fi
+    clear_metadata
     
     while IFS= read -r line; do
         # Skip empty lines and comments
@@ -386,11 +478,7 @@ parse_text() {
             fi
             
             if [[ $valid_key -eq 1 ]] && [[ -n "$value" ]]; then
-                if [[ -n "${DC_metadata[$key]:-}" ]]; then
-                    DC_metadata["$key"]="${DC_metadata[$key]};$value"
-                else
-                    DC_metadata["$key"]="$value"
-                fi
+                append_metadata_value "$key" "$value"
             fi
         fi
     done < "$file"
@@ -404,11 +492,7 @@ parse_html() {
     local line element value prefix
     
     # Clear existing metadata
-    if [[ ${#DC_metadata[@]} -gt 0 ]]; then
-        for key in "${!DC_metadata[@]}"; do
-            unset DC_metadata["$key"]
-        done
-    fi
+    clear_metadata
     
     # Process line by line to find meta tags
     while IFS= read -r line; do
@@ -451,11 +535,7 @@ parse_html() {
                 value=$(unescape_xml_chars "$value")
                 
                 if [[ -n "$value" ]]; then
-                    if [[ -n "${DC_metadata[$element]:-}" ]]; then
-                        DC_metadata["$element"]="${DC_metadata[$element]};$value"
-                    else
-                        DC_metadata["$element"]="$value"
-                    fi
+                    append_metadata_value "$element" "$value"
                 fi
             elif [[ "$name_part" == dcterms.* ]]; then
                 element="${name_part#*.}"
@@ -466,11 +546,7 @@ parse_html() {
                 value=$(unescape_xml_chars "$value")
                 
                 if [[ -n "$value" ]]; then
-                    if [[ -n "${DC_metadata[dcterms:$element]:-}" ]]; then
-                        DC_metadata["dcterms:$element"]="${DC_metadata[dcterms:$element]}|$value"
-                    else
-                        DC_metadata["dcterms:$element"]="$value"
-                    fi
+                    append_metadata_value "dcterms:$element" "$value"
                 fi
             fi
         fi
@@ -492,10 +568,7 @@ validate_dublin_core() {
     DC_validation_errors=0
     DC_validation_warnings=0
     
-    echo "=== Dublin Core Validation Report ==="
-    echo "File: $DC_input_file"
-    echo "Format: $format"
-    echo ""
+    echo "Dublin Core Validation Report - File: $DC_input_file Format: $format"
     
     # Track validation issues
     local validation_issues=()
@@ -503,7 +576,7 @@ validate_dublin_core() {
     
     # Check for at least one required element
     for element in "${DC_ELEMENTS[@]}"; do
-        if [[ -n "${DC_metadata[$element]:-}" ]]; then
+        if get_metadata_value "$element" >/dev/null 2>&1; then
             has_required=1
             break
         fi
@@ -516,14 +589,14 @@ validate_dublin_core() {
     fi
     
     # Validate title (strongly recommended)
-    if [[ -z "${DC_metadata[title]:-}" ]]; then
+    if ! get_metadata_value "title" >/dev/null 2>&1; then
         warning_issues+=("Missing recommended element: title")
         handle_error "WARNING" "Missing recommended element: title"
     fi
     
     # Validate date format if present
-    if [[ -n "${DC_metadata[date]:-}" ]]; then
-        local date_value="${DC_metadata[date]}"
+    local date_value
+    if date_value=$(get_metadata_value "date"); then
         # Check for ISO 8601 format (basic validation)
         if ! [[ "$date_value" =~ ^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$ ]]; then
             warning_issues+=("Date format should be ISO 8601: $date_value")
@@ -532,8 +605,8 @@ validate_dublin_core() {
     fi
     
     # Validate language codes if present
-    if [[ -n "${DC_metadata[language]:-}" ]]; then
-        local lang_value="${DC_metadata[language]}"
+    local lang_value
+    if lang_value=$(get_metadata_value "language"); then
         # Check for ISO 639 format (basic validation)
         if ! [[ "$lang_value" =~ ^[a-z]{2,3}(-[A-Z]{2})?$ ]]; then
             warning_issues+=("Language code should follow ISO 639: $lang_value")
@@ -708,8 +781,9 @@ convert_to_xml() {
         
         # Output DC elements
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${DC_metadata[$element]:-}" ]]; then
-                IFS=';' read -ra values <<< "${DC_metadata[$element]}"
+            local element_value
+            if element_value=$(get_metadata_value "$element"); then
+                IFS=';' read -ra values <<< "$element_value"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <dc:$element>$value</dc:$element>"
@@ -718,16 +792,21 @@ convert_to_xml() {
         done
         
         # Output DCTERMS elements
-        for key in "${!DC_metadata[@]}"; do
+        local all_keys
+        all_keys=$(get_metadata_keys)
+        while IFS= read -r key; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
-                IFS=';' read -ra values <<< "${DC_metadata[$key]}"
-                for value in "${values[@]}"; do
-                    value=$(escape_xml_chars "$value")
-                    echo "    <dcterms:$element>$value</dcterms:$element>"
-                done
+                local key_value
+                if key_value=$(get_metadata_value "$key"); then
+                    IFS=';' read -ra values <<< "$key_value"
+                    for value in "${values[@]}"; do
+                        value=$(escape_xml_chars "$value")
+                        echo "    <dcterms:$element>$value</dcterms:$element>"
+                    done
+                fi
             fi
-        done
+        done <<< "$all_keys"
         
         echo '</metadata>'
     } > "$temp_file"
@@ -751,8 +830,9 @@ convert_to_text() {
         
         # Output DC elements
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${DC_metadata[$element]:-}" ]]; then
-                IFS=';' read -ra values <<< "${DC_metadata[$element]}"
+            local element_value
+            if element_value=$(get_metadata_value "$element"); then
+                IFS=';' read -ra values <<< "$element_value"
                 for value in "${values[@]}"; do
                     # Capitalize first letter of element name
                     local display_name="${element^}"
@@ -762,16 +842,21 @@ convert_to_text() {
         done
         
         # Output DCTERMS elements
-        for key in "${!DC_metadata[@]}"; do
+        local all_keys
+        all_keys=$(get_metadata_keys)
+        while IFS= read -r key; do
             if [[ "$key" =~ ^dcterms: ]]; then
                 local element="${key#dcterms:}"
                 local display_name="${element^}"
-                IFS=';' read -ra values <<< "${DC_metadata[$key]}"
-                for value in "${values[@]}"; do
-                    echo "$display_name: $value"
-                done
+                local key_value
+                if key_value=$(get_metadata_value "$key"); then
+                    IFS=';' read -ra values <<< "$key_value"
+                    for value in "${values[@]}"; do
+                        echo "$display_name: $value"
+                    done
+                fi
             fi
-        done
+        done <<< "$all_keys"
     } > "$temp_file"
     
     # Move to final location
@@ -795,8 +880,9 @@ convert_to_html() {
         
         # Output DC elements as meta tags
         for element in "${DC_ELEMENTS[@]}"; do
-            if [[ -n "${DC_metadata[$element]:-}" ]]; then
-                IFS=';' read -ra values <<< "${DC_metadata[$element]}"
+            local element_value
+            if element_value=$(get_metadata_value "$element"); then
+                IFS=';' read -ra values <<< "$element_value"
                 for value in "${values[@]}"; do
                     value=$(escape_xml_chars "$value")
                     echo "    <meta name=\"DC.$element\" content=\"$value\">"
@@ -874,8 +960,9 @@ extract_term() {
     local found=0
     
     # Check direct match
-    if [[ -n "${DC_metadata[$normalized_term]:-}" ]]; then
-        IFS=';' read -ra values <<< "${DC_metadata[$normalized_term]}"
+    local direct_value
+    if direct_value=$(get_metadata_value "$normalized_term"); then
+        IFS=';' read -ra values <<< "$direct_value"
         
         # Handle select mode
         if [[ $DC_select_index -gt 0 ]]; then
@@ -897,7 +984,7 @@ extract_term() {
             # Normal mode (all values)
             if [[ $DC_clean_mode -eq 1 ]]; then
                 # Output values separated by semicolons
-                echo "${DC_metadata[$normalized_term]}"
+                echo "$direct_value"
             else
                 echo "Term: $term"
                 for value in "${values[@]}"; do
@@ -909,8 +996,9 @@ extract_term() {
     fi
     
     # Check with dcterms prefix
-    if [[ -n "${DC_metadata[dcterms:$normalized_term]:-}" ]]; then
-        IFS=';' read -ra values <<< "${DC_metadata[dcterms:$normalized_term]}"
+    local dcterms_value
+    if dcterms_value=$(get_metadata_value "dcterms:$normalized_term"); then
+        IFS=';' read -ra values <<< "$dcterms_value"
         
         # Handle select mode
         if [[ $DC_select_index -gt 0 ]]; then
@@ -932,7 +1020,7 @@ extract_term() {
             # Normal mode (all values)
             if [[ $DC_clean_mode -eq 1 ]]; then
                 # Output values separated by semicolons
-                echo "${DC_metadata[dcterms:$normalized_term]}"
+                echo "$dcterms_value"
             else
                 echo "Term: dcterms:$term"
                 for value in "${values[@]}"; do
@@ -969,16 +1057,16 @@ validate_DC_selected_terms() {
         local term_found=0
         
         # Check direct match
-        local direct_value="${DC_metadata[$normalized_term]:-}"
-        if [[ -n "$direct_value" ]]; then
+        local direct_value
+        if direct_value=$(get_metadata_value "$normalized_term" 2>/dev/null); then
             term_found=1
             log_message "DEBUG" "Found term: $term"
         fi
         
         # Check with dcterms prefix
         local dcterms_key="dcterms:$normalized_term"
-        local dcterms_value="${DC_metadata[$dcterms_key]:-}"
-        if [[ -n "$dcterms_value" ]]; then
+        local dcterms_value
+        if dcterms_value=$(get_metadata_value "$dcterms_key" 2>/dev/null); then
             term_found=1
             log_message "DEBUG" "Found dcterms term: $term"
         fi
@@ -1030,15 +1118,17 @@ filter_metadata() {
         normalized_term="${term,,}"  # Convert to lowercase
         
         # Check direct match and copy if found
-        if [[ -n "${DC_metadata[$normalized_term]:-}" ]]; then
-            DC_filtered_metadata["$normalized_term"]="${DC_metadata[$normalized_term]}"
+        local direct_value
+        if direct_value=$(get_metadata_value "$normalized_term" 2>/dev/null); then
+            set_filtered_value "$normalized_term" "$direct_value"
             log_message "DEBUG" "Filtered term: $normalized_term"
         fi
         
         # Check with dcterms prefix and copy if found
         local dcterms_key="dcterms:$normalized_term"
-        if [[ -n "${DC_metadata[$dcterms_key]:-}" ]]; then
-            DC_filtered_metadata["$dcterms_key"]="${DC_metadata[$dcterms_key]}"
+        local dcterms_value
+        if dcterms_value=$(get_metadata_value "$dcterms_key" 2>/dev/null); then
+            set_filtered_value "$dcterms_key" "$dcterms_value"
             log_message "DEBUG" "Filtered dcterms term: $dcterms_key"
         fi
     done
@@ -1231,11 +1321,12 @@ display_metadata() {
     
     # Display DC elements
     for element in "${DC_ELEMENTS[@]}"; do
-        if [[ -n "${DC_metadata[$element]:-}" ]]; then
+        local element_value
+        if element_value=$(get_metadata_value "$element" 2>/dev/null); then
             has_metadata=1
             local display_name="${element^}"
             echo "$display_name:"
-            IFS=';' read -ra values <<< "${DC_metadata[$element]}"
+            IFS=';' read -ra values <<< "$element_value"
             for value in "${values[@]}"; do
                 echo "  - $value"
             done
@@ -1243,18 +1334,23 @@ display_metadata() {
     done
     
     # Display DCTERMS elements
-    for key in "${!DC_metadata[@]}"; do
+    local all_keys
+    all_keys=$(get_metadata_keys)
+    while IFS= read -r key; do
         if [[ "$key" =~ ^dcterms: ]]; then
             has_metadata=1
             local element="${key#dcterms:}"
             local display_name="${element^}"
             echo "$display_name (DCTERMS):"
-            IFS=';' read -ra values <<< "${DC_metadata[$key]}"
-            for value in "${values[@]}"; do
-                echo "  - $value"
-            done
+            local key_value
+            if key_value=$(get_metadata_value "$key" 2>/dev/null); then
+                IFS=';' read -ra values <<< "$key_value"
+                for value in "${values[@]}"; do
+                    echo "  - $value"
+                done
+            fi
         fi
-    done
+    done <<< "$all_keys"
     
     if [[ $has_metadata -eq 0 ]]; then
         echo "No Dublin Core metadata found in file"
@@ -1355,6 +1451,9 @@ TERM USAGE:
     Use element names without prefixes in --term flags (e.g., --term title, --term abstract)
     Script automatically detects appropriate namespace (dc: or dcterms:)
     All terms support multiple values separated by semicolon (;) character
+
+Download the latest version of ${SCRIPT_NAME} at:
+    https://github.com/Qirab/dublincore-bash
 
 For more information about Dublin Core, visit:
     https://www.dublincore.org/
@@ -1486,11 +1585,7 @@ parse_arguments() {
                     fi
                     
                     # Store the key=value pair in DC_metadata for write mode
-                    if [[ -n "${DC_metadata[$key]:-}" ]]; then
-                        DC_metadata["$key"]="${DC_metadata[$key]};$value"
-                    else
-                        DC_metadata["$key"]="$value"
-                    fi
+                    append_metadata_value "$key" "$value"
                     
                     # Also add to DC_selected_terms for tracking
                     DC_selected_terms+=("$key")
