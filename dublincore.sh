@@ -5,7 +5,7 @@
 # A comprehensive bash script for processing Dublin Core metadata in XML, text, and HTML formats.
 # Requires bash 4.0 or higher.
 #
-# Version: v1.0.0
+# Version: v1.1.0
 # Author: Qirab™ project of the Thesaurus Islamicus Foundation 
 # License: CC0
 #
@@ -26,7 +26,7 @@ set -o pipefail  # Exit on pipe failure
 # CONSTANTS AND GLOBAL VARIABLES
 # ==============================================================================
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
