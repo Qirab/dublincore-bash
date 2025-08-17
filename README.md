@@ -2,7 +2,7 @@
 A bash script to read, validate and write Dublin Core metadata.
 
 # Specifications
-  - Requires bash 3.2
+  - Requires bash 4.0 or higher (uses associative arrays)
   - Follows the "Guidelines for implementing Dublin Core™ in XML" 2003-04-02 https://www.dublincore.org/specifications/dublin-core/dc-xml-guidelines/2003-04-02/
   - Follows the "DCMI Metadata Terms" 2008-01-14 https://www.dublincore.org/specifications/dublin-core/dcmi-terms/2008-01-14/
 
@@ -25,9 +25,9 @@ dublincore.sh --read metadata.html --format text --output metadata.txt
 dublincore.sh --term "title" --read metadata.xml
 dublincore.sh --term "creator" --read metadata.txt
 
-# Extract term with clean output (values only, pipe-separated if multiple)
+# Extract term with clean output (values only, semicolon-separated if multiple)
 dublincore.sh --term "title" --clean --read metadata.xml
-dublincore.sh --term "creator" --clean --read metadata.xml  # Multiple values: "Smith, Jane|Johnson, Bob"
+dublincore.sh --term "creator" --clean --read metadata.xml  # Multiple values: "Smith, Jane;Johnson, Bob"
 
 # Select specific term value by position (1-based index)
 dublincore.sh --term "creator" --select 1 --read metadata.xml          # Gets first creator value
@@ -58,7 +58,7 @@ dublincore.sh --create --term title "Web Resource" --term abstract "Summary text
   - `--format` and `--output` must be used together
 - `--term TERM` - Extract specific Dublin Core term OR select term for subset operation
   - Can be used multiple times for subset creation or create mode
-- `--clean` - Output only term values, pipe-separated if multiple (use with single --term)
+- `--clean` - Output only term values, semicolon-separated if multiple (use with single --term)
 - `--select N` - Select Nth value whenterm has multiple values (1-based index, use with single --term)
   - Syntax: `--term TERM --select N --read FILE`
 - `--create` - Create new Dublin Core file from --term flags (no input file required)
@@ -89,7 +89,7 @@ abstract, accessRights, alternative, audience, available, bibliographicCitation,
 ### Term Usage
 - Use element names without prefixes in --term flags (e.g., `--term title`, `--term abstract`)
 - Script automatically detects appropriate namespace (dc: or dcterms:)
-- All terms support multiple values separated by pipe (|) character
+- All terms support multiple values separated by semicolon (;) character
 
 ## Supported Formats
 - **XML** - Dublin Core XML with dc: and dcterms: namespaces

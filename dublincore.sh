@@ -3,7 +3,7 @@
 # dublincore.sh - Dublin Core Metadata Processing Script
 # 
 # A comprehensive bash script for processing Dublin Core metadata in XML, text, and HTML formats.
-# Compatible with bash 3.2 or higher.
+# Requires bash 4.0 or higher.
 #
 # Version: v1.0.0
 # Author: Qirab™ project of the Thesaurus Islamicus Foundation 
@@ -20,7 +20,7 @@
 
 set -o errexit   # Exit on error
 set -o pipefail  # Exit on pipe failure
-# Note: nounset disabled due to bash associative array behavior
+# Note: nounset disabled for compatibility with empty associative arrays
 
 # ==============================================================================
 # CONSTANTS AND GLOBAL VARIABLES
@@ -57,9 +57,9 @@ readonly -a DCTERMS_ELEMENTS=(
 readonly MAX_FILE_SIZE=$((100 * 1024 * 1024))
 
 # Global variables with namespace prefix to avoid pollution
-# Using indexed arrays for bash 3.2 compatibility (format: "key=value")
-declare -a DC_metadata
-declare -a DC_filtered_metadata
+# Using associative arrays for metadata storage
+declare -A DC_metadata
+declare -A DC_filtered_metadata
 declare -a DC_selected_terms
 declare -i DC_validation_errors=0
 declare -i DC_validation_warnings=0
@@ -79,19 +79,15 @@ declare DC_debug=0
 # UTILITY FUNCTIONS
 # ==============================================================================
 
-# Bash 3.2 compatible associative array functions using indexed arrays
-# Format: "key=value" stored in indexed array
+# Associative array utility functions
 
 # Get value from metadata array by key
 get_metadata_value() {
     local key="$1"
-    local i
-    for i in "${!DC_metadata[@]}"; do
-        if [[ "${DC_metadata[i]}" == "$key="* ]]; then
-            echo "${DC_metadata[i]#*=}"
-            return 0
-        fi
-    done
+    if [[ -n "${DC_metadata[$key]:-}" ]]; then
+        echo "${DC_metadata[$key]}"
+        return 0
+    fi
     return 1
 }
 
@@ -99,46 +95,28 @@ get_metadata_value() {
 set_metadata_value() {
     local key="$1"
     local value="$2"
-    local i found=0
-    
-    # Check if key already exists and update it
-    for i in "${!DC_metadata[@]}"; do
-        if [[ "${DC_metadata[i]}" == "$key="* ]]; then
-            DC_metadata[i]="$key=$value"
-            found=1
-            break
-        fi
-    done
-    
-    # If key doesn't exist, add it
-    if [[ $found -eq 0 ]]; then
-        DC_metadata+=("$key=$value")
-    fi
+    DC_metadata["$key"]="$value"
 }
 
 # Append value to existing metadata (for multiple values)
 append_metadata_value() {
     local key="$1"
     local value="$2"
-    local existing_value
     
-    if existing_value=$(get_metadata_value "$key"); then
-        set_metadata_value "$key" "$existing_value;$value"
+    if [[ -n "${DC_metadata[$key]:-}" ]]; then
+        DC_metadata["$key"]="${DC_metadata[$key]};$value"
     else
-        set_metadata_value "$key" "$value"
+        DC_metadata["$key"]="$value"
     fi
 }
 
 # Get value from filtered metadata array by key
 get_filtered_value() {
     local key="$1"
-    local i
-    for i in "${!DC_filtered_metadata[@]}"; do
-        if [[ "${DC_filtered_metadata[i]}" == "$key="* ]]; then
-            echo "${DC_filtered_metadata[i]#*=}"
-            return 0
-        fi
-    done
+    if [[ -n "${DC_filtered_metadata[$key]:-}" ]]; then
+        echo "${DC_filtered_metadata[$key]}"
+        return 0
+    fi
     return 1
 }
 
@@ -146,46 +124,28 @@ get_filtered_value() {
 set_filtered_value() {
     local key="$1"
     local value="$2"
-    local i found=0
-    
-    # Check if key already exists and update it
-    for i in "${!DC_filtered_metadata[@]}"; do
-        if [[ "${DC_filtered_metadata[i]}" == "$key="* ]]; then
-            DC_filtered_metadata[i]="$key=$value"
-            found=1
-            break
-        fi
-    done
-    
-    # If key doesn't exist, add it
-    if [[ $found -eq 0 ]]; then
-        DC_filtered_metadata+=("$key=$value")
-    fi
+    DC_filtered_metadata["$key"]="$value"
 }
 
 # Clear metadata arrays
 clear_metadata() {
-    DC_metadata=()
+    unset DC_metadata
+    declare -gA DC_metadata
 }
 
 clear_filtered_metadata() {
-    DC_filtered_metadata=()
+    unset DC_filtered_metadata
+    declare -gA DC_filtered_metadata
 }
 
 # Get all metadata keys
 get_metadata_keys() {
-    local i
-    for i in "${!DC_metadata[@]}"; do
-        echo "${DC_metadata[i]%%=*}"
-    done
+    printf '%s\n' "${!DC_metadata[@]}"
 }
 
 # Get all filtered metadata keys
 get_filtered_keys() {
-    local i
-    for i in "${!DC_filtered_metadata[@]}"; do
-        echo "${DC_filtered_metadata[i]%%=*}"
-    done
+    printf '%s\n' "${!DC_filtered_metadata[@]}"
 }
 
 # ==============================================================================
@@ -260,9 +220,10 @@ trap cleanup_temp_files EXIT INT TERM
 validate_file_security() {
     local file="$1"
     
-    # Check for path traversal attempts
-    if [[ "$file" =~ \.\./|/\.\. ]]; then
-        handle_error "CRITICAL" "Path traversal attempt detected" 1
+    # Check for suspicious path traversal attempts (but allow legitimate relative paths)
+    # Block patterns like ../../.. (3+ levels up) or attempts to access system directories
+    if [[ "$file" =~ \.\./\.\./\.\. ]] || [[ "$file" =~ ^/etc/|^/root/|^/home/[^/]+/\.ssh/ ]]; then
+        handle_error "CRITICAL" "Suspicious path traversal attempt detected" 1
     fi
     
     # Check if file exists
@@ -1106,11 +1067,7 @@ filter_metadata() {
     local term normalized_term
     
     # Clear existing filtered metadata
-    if [[ ${#DC_filtered_metadata[@]} -gt 0 ]]; then
-        for key in "${!DC_filtered_metadata[@]}"; do
-            unset DC_filtered_metadata["$key"]
-        done
-    fi
+    clear_filtered_metadata
     
     log_message "DEBUG" "Filtering metadata for ${#DC_selected_terms[@]} selected terms"
     
