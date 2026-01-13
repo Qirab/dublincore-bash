@@ -96,6 +96,10 @@ abstract, accessRights, alternative, audience, available, bibliographicCitation,
 - **Text** - Simple key: value format
 - **HTML** - Meta tags with DC. and dcterms. prefixes
 
+## Download
+
+dublincore-bash is available from the <a href="https://github.com/Qirab/dublincore-bash" target="_new">Qirab™ Github</a> page.
+
 ## License
 
 This project is released into the public domain under [CC0 1.0 Universal](LICENSE).
